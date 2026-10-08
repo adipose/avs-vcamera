@@ -1,0 +1,80 @@
+; vcamera.inf -- avs-vcamera, a virtual video and audio capture device for tests.
+;
+; Derived from avssamp.inx and avshws.inx in microsoft/Windows-driver-samples.
+; Root-enumerated: devcon install vcamera.inf ROOT\VCamera
+;
+; The interfaces are what DirectShow sees. KSCATEGORY_CAPTURE + KSCATEGORY_VIDEO
+; with ksproxy's CLSID put the filter in CLSID_VideoInputDeviceCategory under
+; FriendlyName. KSCATEGORY_VIDEO_CAMERA is deliberately absent: it would hand
+; the device to the Windows Camera Frame Server, which can hold the single video
+; pin instance a test player needs.
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=Camera
+ClassGuid={ca3e7ab9-b4c3-4ae6-8251-579ef933890f}
+Provider=%ProviderName%
+CatalogFile=vcamera.cat
+DriverVer=10/08/2026,1.0.0.0
+PnpLockdown=1
+
+[SourceDisksNames]
+1000=%cdname%,,,
+
+[SourceDisksFiles]
+vcamera.sys=1000
+
+[DestinationDirs]
+DefaultDestDir=13
+vcamera.CopyFiles=13
+
+[vcamera.CopyFiles]
+vcamera.sys
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64.10.0...16299
+
+[Standard.NTamd64.10.0...16299]
+%vcamera.DeviceDesc%=vcamera,ROOT\VCamera
+
+[vcamera.NT]
+Include=ks.inf, kscaptur.inf
+Needs=KS.Registration, KSCAPTUR.Registration.NT
+CopyFiles=vcamera.CopyFiles
+
+; The reference string has to be the one AVStream registers the filter's
+; interfaces under: the filter descriptor's ReferenceGuid (KSNAME_Filter) as a
+; string. With avshws's "GLOBAL" these entries describe an interface nobody
+; enables, and DirectShow lists the real one with no FriendlyName and no proxy.
+[vcamera.NT.Interfaces]
+AddInterface=%KSCATEGORY_CAPTURE%,%KSNAME_Filter%,vcamera.Interface,0
+AddInterface=%KSCATEGORY_VIDEO%,%KSNAME_Filter%,vcamera.Interface,0
+
+[vcamera.Interface]
+AddReg=vcamera.Interface.AddReg
+
+[vcamera.Interface.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%vcamera.FriendlyName%
+
+[vcamera.NT.Services]
+AddService=vcamera, 0x00000002, vcamera.ServiceInstall
+
+[vcamera.ServiceInstall]
+DisplayName=%vcamera.DeviceDesc%
+ServiceType=1               ; SERVICE_KERNEL_DRIVER
+StartType=3                 ; SERVICE_DEMAND_START
+ErrorControl=1              ; SERVICE_ERROR_NORMAL
+ServiceBinary=%13%\vcamera.sys
+
+[Strings]
+Proxy.CLSID="{17CCA71B-ECD7-11D0-B908-00A0C9223196}"
+KSCATEGORY_CAPTURE="{65E8773D-8F56-11D0-A3B9-00A0C9223196}"
+KSCATEGORY_VIDEO="{6994AD05-93EF-11D0-A3CC-00A0C9223196}"
+KSNAME_Filter="{9B365890-165F-11D0-A195-0020AFD156E4}"
+
+ProviderName="avs-vcamera"
+ManufacturerName="avs-vcamera"
+vcamera.DeviceDesc="Virtual Camera (avs-vcamera, for testing)"
+vcamera.FriendlyName="Virtual Camera (avs-vcamera)"
+cdname="avs-vcamera"

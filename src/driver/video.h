@@ -33,6 +33,14 @@ private:
     PUCHAR m_SynthesisBuffer;
 
     //
+    // avs-vcamera: the colour bars, synthesized once at acquire.  Each frame
+    // starts as a copy of this and gets its counter drawn over it, which
+    // keeps the per-frame work at DPC level to two copies and a few fills
+    // even at 1280x720.
+    //
+    PUCHAR m_BarsBuffer;
+
+    //
     // The captured video info header.  The settings for image synthesis will
     // be based off this header.
     //

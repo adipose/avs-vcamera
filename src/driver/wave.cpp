@@ -365,6 +365,78 @@ Return Value:
 
 /*************************************************/
 
+//
+// avs-vcamera: one cycle of a 500 Hz sine at 48 kHz, half scale.  Every
+// TONE_*_HZ is a multiple of 500 Hz, read by stepping through this table.
+//
+static const SHORT ToneCycle [96] = {
+         0,   1072,   2139,   3196,   4240,   5266,   6270,   7246,   8192,   9102,   9974,  10803,
+     11585,  12318,  12998,  13623,  14189,  14694,  15137,  15515,  15826,  16069,  16244,  16349,
+     16384,  16349,  16244,  16069,  15826,  15515,  15137,  14694,  14189,  13623,  12998,  12318,
+     11585,  10803,   9974,   9102,   8192,   7246,   6270,   5266,   4240,   3196,   2139,   1072,
+         0,  -1072,  -2139,  -3196,  -4240,  -5266,  -6270,  -7246,  -8192,  -9102,  -9974, -10803,
+    -11585, -12318, -12998, -13623, -14189, -14694, -15137, -15515, -15826, -16069, -16244, -16349,
+    -16384, -16349, -16244, -16069, -15826, -15515, -15137, -14694, -14189, -13623, -12998, -12318,
+    -11585, -10803,  -9974,  -9102,  -8192,  -7246,  -6270,  -5266,  -4240,  -3196,  -2139,  -1072
+};
+
+C_ASSERT (TONE_SAMPLE_RATE / 500 == ARRAYSIZE (ToneCycle));
+C_ASSERT (TONE_LEFT_HZ % 500 == 0 && TONE_RIGHT_HZ % 500 == 0);
+
+
+NTSTATUS
+CWaveObject::
+SynthesizeTone (
+    )
+
+/*++
+
+Routine Description:
+
+    avs-vcamera: build the looped wave in memory instead of reading one from
+    a file, so the audio pin always exists and always carries the same
+    signal: TONE_LEFT_HZ on the left channel, TONE_RIGHT_HZ on the right.
+
+Return Value:
+
+    Success / Failure
+
+--*/
+
+{
+
+    PAGED_CODE();
+
+    m_WaveFormat.wFormatTag = WAVE_FORMAT_PCM;
+    m_WaveFormat.nChannels = 2;
+    m_WaveFormat.nSamplesPerSec = TONE_SAMPLE_RATE;
+    m_WaveFormat.wBitsPerSample = 16;
+    m_WaveFormat.nBlockAlign = 4;
+    m_WaveFormat.nAvgBytesPerSec = TONE_SAMPLE_RATE * 4;
+    m_WaveFormat.cbSize = 0;
+
+    m_WaveSize = TONE_SAMPLE_RATE * 4;
+    m_WaveData = reinterpret_cast <PUCHAR> (
+        ExAllocatePoolZero (NonPagedPool, m_WaveSize, AVSSMP_POOLTAG)
+        );
+
+    if (!m_WaveData) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    SHORT *Samples = reinterpret_cast <SHORT *> (m_WaveData);
+    for (ULONG i = 0; i < TONE_SAMPLE_RATE; i++) {
+        Samples [2 * i] = ToneCycle [(i * (TONE_LEFT_HZ / 500)) % ARRAYSIZE (ToneCycle)];
+        Samples [2 * i + 1] = ToneCycle [(i * (TONE_RIGHT_HZ / 500)) % ARRAYSIZE (ToneCycle)];
+    }
+
+    Reset ();
+    return STATUS_SUCCESS;
+
+}
+
+/*************************************************/
+
 
 void
 CWaveObject::
@@ -443,9 +515,7 @@ Arguments:
         // stream forward TimeDelta time.  Remember that TimeDelta is in 
         // units of 100nS.
         //
-        ULONG Samples = (ULONG)(
-            (m_WaveFormat.nSamplesPerSec * TimeDelta) / 10000000
-            );
+        ULONG Samples = SamplesForDelta (TimeDelta);
     
         ULONG Bytes = Samples * (m_WaveFormat.wBitsPerSample / 8) *
             m_WaveFormat.nChannels;
@@ -503,9 +573,7 @@ Return Value:
     // Compute the number of bytes of audio data necessary to move the stream
     // forward TimeDelta time.  Remember that TimeDelta is in units of 100nS.
     //
-    ULONG Samples = (ULONG)(
-        (m_WaveFormat.nSamplesPerSec * TimeDelta) / 10000000
-        );
+    ULONG Samples = SamplesForDelta (TimeDelta);
 
     ULONG Bytes = Samples * (m_WaveFormat.wBitsPerSample / 8) *
         m_WaveFormat.nChannels;

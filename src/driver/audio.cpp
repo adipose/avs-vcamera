@@ -540,8 +540,16 @@ Return Value:
             StreamHeader -> PresentationTime.Time = m_Clock -> GetTime ();
             StreamHeader -> PresentationTime.Numerator =
                 StreamHeader -> PresentationTime.Denominator = 1;
+
+            //
+            // avs-vcamera: give the packet a duration as well, the time the
+            // bytes in it play for, as the video pin does.  Without
+            // DURATIONVALID the AVI mux wrote none of the audio.
+            //
+            StreamHeader -> Duration = m_WaveObject -> BytesToTime (BytesUsed);
             StreamHeader -> OptionsFlags |=
-                KSSTREAM_HEADER_OPTIONSF_TIMEVALID;
+                KSSTREAM_HEADER_OPTIONSF_TIMEVALID |
+                KSSTREAM_HEADER_OPTIONSF_DURATIONVALID;
         }
 
     } else {
@@ -611,15 +619,23 @@ DECLARE_SIMPLE_FRAMING_EX (
 // STATIC_PINNAME_VIDEO_CAPTURE for the video capture pin, but a custom name
 // as defined in avssamp.inf for the audio capture pin.
 //
-GUID g_PINNAME_AUDIO_CAPTURE = 
+GUID g_PINNAME_AUDIO_CAPTURE =
     {0xba1184b9, 0x1fe6, 0x488a, 0xae, 0x78, 0x6e, 0x99, 0x7b, 0x2, 0xca, 0xea};
+
+//
+// avs-vcamera: the audio pin's category is PIN_CATEGORY_CAPTURE, as on a
+// capture card with an audio output, so that FindInterface with
+// PIN_CATEGORY_CAPTURE and MEDIATYPE_Audio finds it.  The sample had
+// KSCATEGORY_AUDIO.
+//
+GUID g_PINCATEGORY_AUDIO_CAPTURE = {STATIC_PINNAME_VIDEO_CAPTURE};
 
 //
 // AudioPinDescriptorTemplate:
 //
 // The template for the audio pin descriptor.  The audio pin on this filter
-// is created dynamically -- if and only if c:\avssamp.wav exists and is
-// a valid and readable wave file.
+// is created dynamically, at filter creation, from the synthesized tone's
+// format (avs-vcamera: always; the sample needed c:\avssamp.wav).
 //
 const
 KSPIN_DESCRIPTOR_EX
@@ -638,7 +654,7 @@ AudioPinDescriptorTemplate = {
         NULL,                               // Ranges (filled in later)
         KSPIN_DATAFLOW_OUT,                 // Dataflow
         KSPIN_COMMUNICATION_BOTH,           // Communication
-        &KSCATEGORY_AUDIO,                  // Category
+        &g_PINCATEGORY_AUDIO_CAPTURE,       // Category
         &g_PINNAME_AUDIO_CAPTURE,           // Name
         0                                   // Reserved
     },

@@ -61,7 +61,24 @@ extern "C" {
 //
 // The number of ranges supported on the capture pin.
 //
-#define CAPTURE_PIN_DATA_RANGE_COUNT 2
+#define CAPTURE_PIN_DATA_RANGE_COUNT 6
+
+//
+// avs-vcamera: the frame counter strip along the top of each video frame.
+// FRAME_STRIP_BITS blocks across, the strip being 1/FRAME_STRIP_HEIGHT_DIVISOR
+// of the picture height.  tests/avicheck.py reads it back.
+//
+#define FRAME_STRIP_BITS 32
+#define FRAME_STRIP_HEIGHT_DIVISOR 12
+
+//
+// avs-vcamera: the synthesized audio.  48 kHz, 16-bit stereo, a 1000 Hz tone
+// on the left and 1500 Hz on the right at half scale, looped from a one
+// second buffer (both frequencies divide 1 s exactly, so the loop is seamless).
+//
+#define TONE_SAMPLE_RATE 48000
+#define TONE_LEFT_HZ 1000
+#define TONE_RIGHT_HZ 1500
 
 //
 // CAPTURE_FILTER_PIN_COUNT:

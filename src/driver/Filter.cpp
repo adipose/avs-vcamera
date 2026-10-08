@@ -169,33 +169,32 @@ Return Value:
     }
 
     //
-    // Create the wave reader.  We need it at this point because the data
+    // Create the wave object.  We need it at this point because the data
     // ranges exposed on the audio pin need to change dynamically right
     // now.
     //
+    // avs-vcamera: the wave is a synthesized test tone rather than
+    // c:\avssamp.wav, so the audio pin is always there.  A test of a player
+    // that takes audio from the video device (MPC-HC's capture path with no
+    // separate audio device) depends on that.
+    //
     if (NT_SUCCESS (Status)) {
 
-        CapFilter -> m_WaveObject =  
+        CapFilter -> m_WaveObject =
             new (NonPagedPool, 'evaW') CWaveObject (
-                L"\\DosDevices\\c:\\avssamp.wav"
+                NULL
                 );
 
         if (!CapFilter -> m_WaveObject) {
             Status = STATUS_INSUFFICIENT_RESOURCES;
         } else {
-            Status = CapFilter -> m_WaveObject -> ParseAndRead ();
+            Status = CapFilter -> m_WaveObject -> SynthesizeTone ();
 
-            //
-            // If the file cannot be found, don't fail to create the filter.
-            // This simply means that audio cannot be synthesized.
-            //
-            if (Status == STATUS_OBJECT_NAME_NOT_FOUND ||
-                Status == STATUS_ACCESS_DENIED) {
+            if (!NT_SUCCESS (Status)) {
                 delete CapFilter -> m_WaveObject;
                 CapFilter -> m_WaveObject = NULL;
-                Status = STATUS_SUCCESS;
             }
-            
+
         }
 
     }
@@ -778,7 +777,12 @@ CaptureFilterPinDescriptors [CAPTURE_FILTER_PIN_COUNT] = {
             VideoCapturePinDataRanges,      // Ranges
             KSPIN_DATAFLOW_OUT,             // Dataflow
             KSPIN_COMMUNICATION_BOTH,       // Communication
-            &KSCATEGORY_VIDEO,              // Category
+            // avs-vcamera: PIN_CATEGORY_CAPTURE (the same GUID as
+            // PINNAME_VIDEO_CAPTURE), as avshws has it, rather than
+            // KSCATEGORY_VIDEO.  ksproxy answers AMPROPERTY_PIN_CATEGORY
+            // with this, and ICaptureGraphBuilder2::FindInterface with
+            // PIN_CATEGORY_CAPTURE is how a player finds the pin.
+            &g_PINNAME_VIDEO_CAPTURE,       // Category
             &g_PINNAME_VIDEO_CAPTURE,       // Name
             0                               // Reserved
         },

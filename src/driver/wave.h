@@ -109,6 +109,50 @@ public:
         );
 
     //
+    // SynthesizeTone():
+    //
+    // avs-vcamera: build a looped stereo test tone in memory instead of
+    // reading a wave file.  See TONE_* in avssamp.h.
+    //
+    NTSTATUS
+    SynthesizeTone (
+        );
+
+    //
+    // SamplesForDelta():
+    //
+    // avs-vcamera: how many samples take the stream from m_SynthesisTime to
+    // m_SynthesisTime + TimeDelta.  Counted from the start of the stream
+    // rather than per call, so the remainder of one call carries into the
+    // next.  The sample truncated every call: at 30 fps and 48 kHz it
+    // produced 1599 samples a frame instead of 1600.
+    //
+    //
+    // BytesToTime():
+    //
+    // avs-vcamera: how long a number of bytes of the wave plays, in 100 ns.
+    //
+    LONGLONG
+    BytesToTime (
+        IN ULONG Bytes
+        )
+    {
+        return m_WaveFormat.nAvgBytesPerSec ?
+            (LONGLONG)Bytes * 10000000 / m_WaveFormat.nAvgBytesPerSec : 0;
+    }
+
+    ULONG
+    SamplesForDelta (
+        IN LONGLONG TimeDelta
+        )
+    {
+        return (ULONG)(
+            (m_WaveFormat.nSamplesPerSec * (m_SynthesisTime + TimeDelta)) / 10000000 -
+            (m_WaveFormat.nSamplesPerSec * m_SynthesisTime) / 10000000
+            );
+    }
+
+    //
     // WriteRange():
     //
     // Given the address of a KSDATARANGE_AUDIO, write out a range which

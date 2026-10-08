@@ -871,7 +871,15 @@ Return Value:
                 )
             );
 
-        if (!m_SynthesisBuffer) {
+        m_BarsBuffer = reinterpret_cast <PUCHAR> (
+            ExAllocatePoolZero (
+                NonPagedPool,
+                m_VideoInfoHeader -> bmiHeader.biSizeImage,
+                AVSSMP_POOLTAG
+                )
+            );
+
+        if (!m_SynthesisBuffer || !m_BarsBuffer) {
             Status = STATUS_INSUFFICIENT_RESOURCES;
         } else {
             //
@@ -934,7 +942,13 @@ Return Value:
         // If everything is okay at this point, inform the synthesizer of
         // the scratch buffer.
         //
+        //
+        // avs-vcamera: draw the bars once, into their own buffer, and point
+        // the synthesizer at the scratch buffer for the per-frame overlays.
+        //
         if (NT_SUCCESS (Status)) {
+            m_ImageSynth -> SetBuffer (m_BarsBuffer);
+            m_ImageSynth -> SynthesizeBars ();
             m_ImageSynth -> SetBuffer (m_SynthesisBuffer);
         }
 
@@ -1001,6 +1015,11 @@ Return Value:
     if (m_SynthesisBuffer) {
         ExFreePool (m_SynthesisBuffer);
         m_SynthesisBuffer = NULL;
+    }
+
+    if (m_BarsBuffer) {
+        ExFreePool (m_BarsBuffer);
+        m_BarsBuffer = NULL;
     }
 
     return STATUS_SUCCESS;
@@ -1087,57 +1106,71 @@ Return Value:
         }
 
         //
-        // Generate a synthesized image.
+        // avs-vcamera: start from the cached bars rather than synthesizing
+        // them again, then draw the frame counter over them.
         //
-        m_ImageSynth -> SynthesizeBars ();
-
-        //
-        // Overlay some activity onto the bars.
-        //
-        ULONG DropLength = (Tick * 2) % 
-            (ABS (m_VideoInfoHeader -> bmiHeader.biHeight));
-    
-        //
-        // Create a drop flowing down DropLength lines from the top of the 
-        // image.
-        //
-        m_ImageSynth -> Fill (
-            0, 0, 
-            m_VideoInfoHeader -> bmiHeader.biWidth - 1, DropLength, 
-            GREEN
+        RtlCopyMemory (
+            m_SynthesisBuffer,
+            m_BarsBuffer,
+            m_VideoInfoHeader -> bmiHeader.biSizeImage
             );
 
-        //
-        // Overlay the dropped frame count over the image.
-        //
-        char Text [256];
-        Text[0] = '\0';
-        RtlStringCbPrintfA(Text, sizeof(Text), "Video Skipped: %ld", m_DroppedFrames);
-
-        m_ImageSynth -> OverlayText (
-            10,
-            10,
-            1,
-            Text,
-            TRANSPARENT,
-            BLUE
-            );
+        ULONG Width = m_VideoInfoHeader -> bmiHeader.biWidth;
+        ULONG Height = ABS (m_VideoInfoHeader -> bmiHeader.biHeight);
 
         //
-        // This is used to indicate that there is no audio pin.
+        // The frame number as a strip a program can read without OCR: 32
+        // blocks across the top of the picture, most significant bit on the
+        // left, white for 1 and black for 0.  A reader samples the middle of
+        // each block.  Every supported width is a multiple of 64, so blocks
+        // are an even number of pixels wide and never split a UYVY pair.
         //
-        if (m_NotifyAudDrop != (ULONG)-1) {
-            RtlStringCbPrintfA(Text, sizeof(Text), "Audio Skipped: %ld", m_NotifyAudDrop);
+        ULONG Frame = (ULONG)m_FrameNumber;
+        ULONG BlockWidth = Width / FRAME_STRIP_BITS;
+        ULONG StripHeight = Height / FRAME_STRIP_HEIGHT_DIVISOR;
 
-            m_ImageSynth -> OverlayText (
-                10,
-                20,
-                1,
-                Text,
-                TRANSPARENT,
-                BLUE
+        for (ULONG Bit = 0; Bit < FRAME_STRIP_BITS; Bit++) {
+            BOOLEAN One = (Frame >> (FRAME_STRIP_BITS - 1 - Bit)) & 1;
+            m_ImageSynth -> Fill (
+                Bit * BlockWidth, 0,
+                (Bit + 1) * BlockWidth - 1, StripHeight - 1,
+                One ? WHITE : BLACK
                 );
         }
+
+        //
+        // The same number for a person, large and centred, with the format
+        // underneath so a screenshot says which size was being sent.
+        //
+        ULONG Scale = Height / 120;
+        if (Scale == 0) Scale = 1;
+
+        char Text [256];
+        Text[0] = '\0';
+        RtlStringCbPrintfA(Text, sizeof(Text), "FRAME %06lu", Frame);
+
+        m_ImageSynth -> OverlayText (
+            POSITION_CENTER,
+            Height / 2 - 4 * Scale,
+            Scale,
+            Text,
+            BLACK,
+            WHITE
+            );
+
+        RtlStringCbPrintfA(Text, sizeof(Text), "%lux%lu %s  skipped %lu",
+            Width, Height,
+            m_VideoInfoHeader -> bmiHeader.biCompression == KS_BI_RGB ? "RGB24" : "UYVY",
+            m_DroppedFrames);
+
+        m_ImageSynth -> OverlayText (
+            POSITION_CENTER,
+            Height / 2 + 8 * Scale,
+            (Scale + 1) / 2,
+            Text,
+            BLACK,
+            WHITE
+            );
 
         //
         // Copy the synthesized image into the buffer.
@@ -1208,177 +1241,88 @@ Return Value:
 
 **************************************************************************/
 
-#define D_X 320
-#define D_Y 240
-
 //
-// FormatRGB24Bpp_Capture:
+// avs-vcamera: one range per size and format instead of the sample's single
+// 320x240 pair.  ksproxy reports each range as one IAMStreamConfig
+// capability, so a player sees three sizes in each of two formats.
 //
-// This is the data range description of the RGB24 capture format we support.
+// Each range is a fixed size: input, cropping and output sizes are all the
+// range's own dimensions.  A range that advertised a span of output sizes
+// would invite a player to ask for sizes in between (MPC-HC does, from a
+// preset list), and DispatchSetFormat accepts only the exact dimensions of
+// a range.
 //
-const 
-KS_DATARANGE_VIDEO 
-FormatRGB24Bpp_Capture = {
-
-    //
-    // KSDATARANGE
-    //
-    {   
-        sizeof (KS_DATARANGE_VIDEO),                // FormatSize
-        0,                                          // Flags
-        D_X * D_Y * 3,                              // SampleSize
-        0,                                          // Reserved
-
-        STATICGUIDOF (KSDATAFORMAT_TYPE_VIDEO),     // aka. MEDIATYPE_Video
-        0xe436eb7d, 0x524f, 0x11ce, 0x9f, 0x53, 0x00, 0x20, 
-            0xaf, 0x0b, 0xa7, 0x70,                 // aka. MEDIASUBTYPE_RGB24,
-        STATICGUIDOF (KSDATAFORMAT_SPECIFIER_VIDEOINFO) // aka. FORMAT_VideoInfo
-    },
-
-    TRUE,               // BOOL,  bFixedSizeSamples (all samples same size?)
-    TRUE,               // BOOL,  bTemporalCompression (all I frames?)
-    0,                  // Reserved (was StreamDescriptionFlags)
-    0,                  // Reserved (was MemoryAllocationFlags   
-                        //           (KS_VIDEO_ALLOC_*))
-
-    //
-    // _KS_VIDEO_STREAM_CONFIG_CAPS  
-    //
-    {
-        STATICGUIDOF( KSDATAFORMAT_SPECIFIER_VIDEOINFO ), // GUID
-        KS_AnalogVideo_NTSC_M |
-        KS_AnalogVideo_PAL_B,                    // AnalogVideoStandard
-        720,480,        // InputSize, (the inherent size of the incoming signal
-                        //             with every digitized pixel unique)
-        160,120,        // MinCroppingSize, smallest rcSrc cropping rect allowed
-        720,480,        // MaxCroppingSize, largest  rcSrc cropping rect allowed
-        8,              // CropGranularityX, granularity of cropping size
-        1,              // CropGranularityY
-        8,              // CropAlignX, alignment of cropping rect 
-        1,              // CropAlignY;
-        160, 120,       // MinOutputSize, smallest bitmap stream can produce
-        720, 480,       // MaxOutputSize, largest  bitmap stream can produce
-        8,              // OutputGranularityX, granularity of output bitmap size
-        1,              // OutputGranularityY;
-        0,              // StretchTapsX  (0 no stretch, 1 pix dup, 2 interp...)
-        0,              // StretchTapsY
-        0,              // ShrinkTapsX 
-        0,              // ShrinkTapsY 
-        333667,         // MinFrameInterval, 100 nS units
-        640000000,      // MaxFrameInterval, 100 nS units
-        8 * 3 * 30 * 160 * 120,  // MinBitsPerSecond;
-        8 * 3 * 30 * 720 * 480   // MaxBitsPerSecond;
-    }, 
-        
-    //
-    // KS_VIDEOINFOHEADER (default format)
-    //
-    {
-        0,0,0,0,                            // RECT  rcSource; 
-        0,0,0,0,                            // RECT  rcTarget; 
-        D_X * D_Y * 3 * 30,                 // DWORD dwBitRate;
-        0L,                                 // DWORD dwBitErrorRate; 
-        333667,                             // REFERENCE_TIME  AvgTimePerFrame;   
-        sizeof (KS_BITMAPINFOHEADER),       // DWORD biSize;
-        D_X,                                // LONG  biWidth;
-        -D_Y,                               // LONG  biHeight;
-        1,                                  // WORD  biPlanes;
-        24,                                 // WORD  biBitCount;
-        KS_BI_RGB,                          // DWORD biCompression;
-        D_X * D_Y * 3,                      // DWORD biSizeImage;
-        0,                                  // LONG  biXPelsPerMeter;
-        0,                                  // LONG  biYPelsPerMeter;
-        0,                                  // DWORD biClrUsed;
-        0                                   // DWORD biClrImportant;
-    }
-}; 
-
-#undef D_X
-#undef D_Y
-
-#define D_X 320
-#define D_Y 240
-
+// The smallest size comes first because the first range is the default
+// format, and an uncompressed recording at that size is cheap on a guest
+// rendering with WARP.  30 fps exactly.
 //
-// FormatUYU2_Capture:
-//
-// This is the data range description of the UYVY format we support.
-//
-const 
-KS_DATARANGE_VIDEO 
-FormatUYU2_Capture = {
+#define VCAM_FRAME_INTERVAL 333333
 
-    //
-    // KSDATARANGE
-    //
-    {   
-        sizeof (KS_DATARANGE_VIDEO),            // FormatSize
-        0,                                      // Flags
-        D_X * D_Y * 2,                          // SampleSize
-        0,                                      // Reserved
-        STATICGUIDOF (KSDATAFORMAT_TYPE_VIDEO), // aka. MEDIATYPE_Video
-        0x59565955, 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xaa, 
-            0x00, 0x38, 0x9b, 0x71,             // aka. MEDIASUBTYPE_UYVY,
-        STATICGUIDOF (KSDATAFORMAT_SPECIFIER_VIDEOINFO) // aka. FORMAT_VideoInfo
-    },
+#define VCAM_VIDEO_RANGE(Name, SubTypeGuid, Bpp, Compression, Width, Height) \
+const                                                                        \
+KS_DATARANGE_VIDEO                                                           \
+Name = {                                                                     \
+    {                                                                        \
+        sizeof (KS_DATARANGE_VIDEO),                /* FormatSize */         \
+        0,                                          /* Flags */              \
+        (Width) * (Height) * (Bpp) / 8,             /* SampleSize */         \
+        0,                                          /* Reserved */           \
+        STATICGUIDOF (KSDATAFORMAT_TYPE_VIDEO),     /* MEDIATYPE_Video */    \
+        SubTypeGuid,                                                         \
+        STATICGUIDOF (KSDATAFORMAT_SPECIFIER_VIDEOINFO) /* FORMAT_VideoInfo */ \
+    },                                                                       \
+    TRUE,               /* bFixedSizeSamples */                              \
+    TRUE,               /* bTemporalCompression (all I frames) */            \
+    0,                  /* Reserved (was StreamDescriptionFlags) */          \
+    0,                  /* Reserved (was MemoryAllocationFlags) */           \
+    {                                                                        \
+        STATICGUIDOF (KSDATAFORMAT_SPECIFIER_VIDEOINFO),                     \
+        0,                          /* AnalogVideoStandard: none */          \
+        (Width), (Height),          /* InputSize */                          \
+        (Width), (Height),          /* MinCroppingSize */                    \
+        (Width), (Height),          /* MaxCroppingSize */                    \
+        1, 1,                       /* CropGranularityX, Y */                \
+        1, 1,                       /* CropAlignX, Y */                      \
+        (Width), (Height),          /* MinOutputSize */                      \
+        (Width), (Height),          /* MaxOutputSize */                      \
+        1, 1,                       /* OutputGranularityX, Y */              \
+        0, 0, 0, 0,                 /* Stretch and shrink taps */            \
+        VCAM_FRAME_INTERVAL,        /* MinFrameInterval, 100 ns units */     \
+        640000000,                  /* MaxFrameInterval */                   \
+        (Bpp) * (Width) * (Height),         /* MinBitsPerSecond (1 fps) */   \
+        (Bpp) * 30 * (Width) * (Height)     /* MaxBitsPerSecond */           \
+    },                                                                       \
+    {                                                                        \
+        0, 0, 0, 0,                 /* rcSource */                           \
+        0, 0, 0, 0,                 /* rcTarget */                           \
+        (Bpp) * 30 * (Width) * (Height),    /* dwBitRate */                  \
+        0L,                         /* dwBitErrorRate */                     \
+        VCAM_FRAME_INTERVAL,        /* AvgTimePerFrame */                    \
+        sizeof (KS_BITMAPINFOHEADER),                                        \
+        (Width),                                                             \
+        /* Positive: bottom-up RGB24, the DIB default a capture card */      \
+        /* sends.  The sample's top-down RGB24 made the AVI mux take a */    \
+        /* colour converter.  UYVY is top-down with a positive height. */    \
+        (Height),                                                            \
+        1,                          /* biPlanes */                           \
+        (Bpp),                      /* biBitCount */                         \
+        (Compression),              /* biCompression */                      \
+        (Width) * (Height) * (Bpp) / 8, /* biSizeImage */                    \
+        0, 0, 0, 0                                                           \
+    }                                                                        \
+};
 
-    TRUE,               // BOOL,  bFixedSizeSamples (all samples same size?)
-    TRUE,               // BOOL,  bTemporalCompression (all I frames?)
-    0,                  // Reserved (was StreamDescriptionFlags)
-    0,                  // Reserved (was MemoryAllocationFlags   
-                        //           (KS_VIDEO_ALLOC_*))
+#define VCAM_GUID_RGB24 \
+    0xe436eb7d, 0x524f, 0x11ce, 0x9f, 0x53, 0x00, 0x20, 0xaf, 0x0b, 0xa7, 0x70  /* MEDIASUBTYPE_RGB24 */
+#define VCAM_GUID_UYVY \
+    0x59565955, 0x0000, 0x0010, 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71  /* MEDIASUBTYPE_UYVY */
 
-    //
-    // _KS_VIDEO_STREAM_CONFIG_CAPS  
-    //
-    {
-        STATICGUIDOF( KSDATAFORMAT_SPECIFIER_VIDEOINFO ), // GUID
-        KS_AnalogVideo_NTSC_M |
-        KS_AnalogVideo_PAL_B,                    // AnalogVideoStandard
-        720,480,        // InputSize, (the inherent size of the incoming signal
-                    //             with every digitized pixel unique)
-        160,120,        // MinCroppingSize, smallest rcSrc cropping rect allowed
-        720,480,        // MaxCroppingSize, largest  rcSrc cropping rect allowed
-        8,              // CropGranularityX, granularity of cropping size
-        1,              // CropGranularityY
-        8,              // CropAlignX, alignment of cropping rect 
-        1,              // CropAlignY;
-        160, 120,       // MinOutputSize, smallest bitmap stream can produce
-        720, 480,       // MaxOutputSize, largest  bitmap stream can produce
-        8,              // OutputGranularityX, granularity of output bitmap size
-        1,              // OutputGranularityY;
-        0,              // StretchTapsX  (0 no stretch, 1 pix dup, 2 interp...)
-        0,              // StretchTapsY
-        0,              // ShrinkTapsX 
-        0,              // ShrinkTapsY 
-        333667,         // MinFrameInterval, 100 nS units
-        640000000,      // MaxFrameInterval, 100 nS units
-        8 * 2 * 30 * 160 * 120,  // MinBitsPerSecond;
-        8 * 2 * 30 * 720 * 480   // MaxBitsPerSecond;
-    }, 
-        
-    //
-    // KS_VIDEOINFOHEADER (default format)
-    //
-    {
-        0,0,0,0,                            // RECT  rcSource; 
-        0,0,0,0,                            // RECT  rcTarget; 
-        D_X * D_Y * 2 * 30,                 // DWORD dwBitRate;
-        0L,                                 // DWORD dwBitErrorRate; 
-        333667,                             // REFERENCE_TIME  AvgTimePerFrame;   
-        sizeof (KS_BITMAPINFOHEADER),       // DWORD biSize;
-        D_X,                                // LONG  biWidth;
-        D_Y,                                // LONG  biHeight;
-        1,                                  // WORD  biPlanes;
-        16,                                 // WORD  biBitCount;
-        FOURCC_YUV422,                      // DWORD biCompression;
-        D_X * D_Y * 2,                      // DWORD biSizeImage;
-        0,                                  // LONG  biXPelsPerMeter;
-        0,                                  // LONG  biYPelsPerMeter;
-        0,                                  // DWORD biClrUsed;
-        0                                   // DWORD biClrImportant;
-    }
-}; 
+VCAM_VIDEO_RANGE (FormatUYVY_320x240,   VCAM_GUID_UYVY,  16, FOURCC_YUV422, 320, 240)
+VCAM_VIDEO_RANGE (FormatRGB24_320x240,  VCAM_GUID_RGB24, 24, KS_BI_RGB,     320, 240)
+VCAM_VIDEO_RANGE (FormatUYVY_640x480,   VCAM_GUID_UYVY,  16, FOURCC_YUV422, 640, 480)
+VCAM_VIDEO_RANGE (FormatRGB24_640x480,  VCAM_GUID_RGB24, 24, KS_BI_RGB,     640, 480)
+VCAM_VIDEO_RANGE (FormatUYVY_1280x720,  VCAM_GUID_UYVY,  16, FOURCC_YUV422, 1280, 720)
+VCAM_VIDEO_RANGE (FormatRGB24_1280x720, VCAM_GUID_RGB24, 24, KS_BI_RGB,     1280, 720)
 
 //
 // VideoCapturePinDispatch:
@@ -1421,13 +1365,17 @@ DECLARE_SIMPLE_FRAMING_EX (
 //
 // VideoCapturePinDataRanges:
 //
-// This is the list of data ranges supported on the capture pin.  We support
-// two: one RGB24, and one UYVY.
+// This is the list of data ranges supported on the capture pin: three sizes,
+// each in UYVY and RGB24.
 //
 const 
 PKSDATARANGE 
 VideoCapturePinDataRanges [CAPTURE_PIN_DATA_RANGE_COUNT] = {
-    (PKSDATARANGE) &FormatRGB24Bpp_Capture,
-    (PKSDATARANGE) &FormatUYU2_Capture
+    (PKSDATARANGE) &FormatUYVY_320x240,
+    (PKSDATARANGE) &FormatRGB24_320x240,
+    (PKSDATARANGE) &FormatUYVY_640x480,
+    (PKSDATARANGE) &FormatRGB24_640x480,
+    (PKSDATARANGE) &FormatUYVY_1280x720,
+    (PKSDATARANGE) &FormatRGB24_1280x720,
     };
 
